@@ -1,6 +1,6 @@
 //! The seccomp layer: an allowlist of syscall names plus argument rules, compiled by seccompiler into
-//! one BPF program (default action and wrong architecture: KILL_PROCESS) and installed with seccomp(2)
-//! (TSYNC on request).
+//! one BPF program (default action and wrong architecture: KILL_PROCESS) and installed with
+//! `seccompiler::apply_filter` (TSYNC on request).
 
 use std::collections::BTreeMap;
 
@@ -149,16 +149,10 @@ pub fn compile<'a>(
     .map_err(|x: seccompiler::BackendError| e(&x))
 }
 
-/// Installs `prog` on the calling thread (`all_threads`: on every thread, TSYNC) with seccomp(2), after
-/// setting NO_NEW_PRIVS and checking that the process is not dumpable.
+/// Installs `prog` on the calling thread (`all_threads`: on every thread, TSYNC). Requires
+/// NO_NEW_PRIVS already set and the process not dumpable (checked first: after the filter the
+/// getters may be denied).
 pub fn install(prog: &BpfProgram, all_threads: bool) -> Result<(), ConfineError> {
-    // SAFETY: prctl with integer arguments only.
-    if unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
-        return Err(ConfineError::Seccomp(format!(
-            "PR_SET_NO_NEW_PRIVS: {}",
-            errno_name(errno())
-        )));
-    }
     // SAFETY: getter prctls with integer arguments only (no filter of ours yet).
     let (nnp, dumpable) = unsafe {
         (
@@ -171,41 +165,27 @@ pub fn install(prog: &BpfProgram, all_threads: bool) -> Result<(), ConfineError>
             "no_new_privs {nnp}, dumpable {dumpable}"
         )));
     }
-    let len = u16::try_from(prog.len())
-        .map_err(|_| ConfineError::Seccomp(format!("{} BPF instructions", prog.len())))?;
-    let fprog = SockFprog {
-        len,
-        filter: prog.as_ptr(),
-    };
-    let flags: libc::c_ulong = if all_threads {
-        SECCOMP_FILTER_FLAG_TSYNC
-    } else {
-        0
-    };
-    // SAFETY: `fprog` points at `prog`, which outlives the call; the kernel copies the program.
-    let rc = unsafe {
-        libc::syscall(
-            libc::SYS_seccomp,
-            SECCOMP_SET_MODE_FILTER,
-            flags,
-            &raw const fprog,
-        )
-    };
-    if rc != 0 {
-        return Err(ConfineError::Seccomp(if rc < 0 {
-            errno_name(errno())
-        } else {
-            format!("TSYNC failed for thread {rc}")
-        }));
+    // apply_filter truncates the length to u16 silently.
+    if u16::try_from(prog.len()).is_err() {
+        return Err(ConfineError::Seccomp(format!(
+            "{} BPF instructions",
+            prog.len()
+        )));
     }
-    Ok(())
-}
-
-const SECCOMP_SET_MODE_FILTER: libc::c_ulong = 1;
-const SECCOMP_FILTER_FLAG_TSYNC: libc::c_ulong = 1;
-
-#[repr(C)]
-struct SockFprog {
-    len: u16,
-    filter: *const seccompiler::sock_filter,
+    let r = if all_threads {
+        seccompiler::apply_filter_all_threads(prog)
+    } else {
+        seccompiler::apply_filter(prog)
+    };
+    r.map_err(|x| {
+        ConfineError::Seccomp(match x {
+            seccompiler::Error::Prctl(io) => format!(
+                "PR_SET_NO_NEW_PRIVS: {}",
+                errno_name(io.raw_os_error().unwrap_or_else(errno))
+            ),
+            seccompiler::Error::Seccomp(io) => errno_name(io.raw_os_error().unwrap_or_else(errno)),
+            seccompiler::Error::ThreadSync(tid) => format!("TSYNC failed for thread {tid}"),
+            other => other.to_string(),
+        })
+    })
 }

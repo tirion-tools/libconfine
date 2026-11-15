@@ -10,7 +10,8 @@
 //!   3. Landlock through the `landlock` crate at a hard minimum ABI: every filesystem and network
 //!      right and every scope of the running kernel's ABI handled, plus the policy's path rules;
 //!   4. one seccompiler filter (default and wrong architecture KILL_PROCESS) compiled from the
-//!      allowlist and its argument rules, installed with seccomp(2) (TSYNC when the policy asks);
+//!      allowlist and its argument rules, installed with `seccompiler::apply_filter` (TSYNC when the
+//!      policy asks);
 //!   5. the policy's self-check, returning a [`Report`].
 //!
 //! The pieces are public as well, for denial-matrix drivers that apply the layers in a different
