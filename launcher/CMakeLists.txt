@@ -1,0 +1,16 @@
+# The generic helper launcher library: policy schema (helper_policy.h) and the Linux backend (linux/): the
+# invocation contract, the descriptor-only box, the one-directory box and the dynamic-binary box. The caller
+# supplies the policy table, the helper directory, each helper's argv and the dynamic box's specifics.
+# Links libseccomp (dynamic, LGPL-2.1).
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBSECCOMP REQUIRED IMPORTED_TARGET libseccomp>=2.5)
+
+add_library(confine_launcher STATIC
+  linux/box.cc
+  linux/contract.cc
+  linux/directory_box.cc
+  linux/dynamic_box.cc
+  linux/oneshot_box.cc)
+target_include_directories(confine_launcher PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(confine_launcher PUBLIC cxx_std_20)
+target_link_libraries(confine_launcher PUBLIC PkgConfig::LIBSECCOMP)
