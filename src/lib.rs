@@ -17,8 +17,8 @@
 //! The pieces are public as well, for denial-matrix drivers that apply the layers in a different
 //! order around their probes ([`probe`]).
 //!
-//! This directory has no dependency on the rest of its crate (only `super::` paths): it can become a
-//! crate root as is.
+//! Linux on x86_64 only; on other targets the crate is empty.
+#![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 pub mod alloc;
 pub mod allowlist;
