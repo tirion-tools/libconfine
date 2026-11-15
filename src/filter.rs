@@ -189,3 +189,106 @@ pub fn install(prog: &BpfProgram, all_threads: bool) -> Result<(), ConfineError>
         })
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::bpf::{AUDIT_ARCH_I386, AUDIT_ARCH_X86_64, RET_ALLOW, RET_KILL_PROCESS, run};
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn allowed(prog: &BpfProgram, args: [u64; 6]) -> BTreeSet<i64> {
+        (0..1024i64)
+            .filter(|&nr| run(prog, AUDIT_ARCH_X86_64, nr, args) == RET_ALLOW)
+            .collect()
+    }
+
+    #[test]
+    fn compiles_exactly_the_allowlist() {
+        let list = ["read", "write", "exit_group", "getrandom", "capget"];
+        let prog = compile(list, &[]).unwrap();
+        let want: BTreeSet<i64> = list.iter().map(|n| syscalls::number(n).unwrap()).collect();
+        assert_eq!(allowed(&prog, [0; 6]), want);
+        assert_eq!(allowed(&prog, [u64::MAX; 6]), want);
+    }
+
+    #[test]
+    fn argument_rules() {
+        let rules = [
+            ArgRule::one_of32("prctl", 0, &[1, 2]),
+            ArgRule {
+                syscall: "mmap",
+                any_of: vec![vec![Cond::masked64(2, 4, 0), Cond::masked64(3, 1, 0)]],
+            },
+            ArgRule {
+                syscall: "recvmsg",
+                any_of: vec![vec![Cond::eq32(0, 3), Cond::masked32(2, 0x40, 0x40)]],
+            },
+            ArgRule {
+                syscall: "clone",
+                any_of: vec![vec![Cond::eq64(0, 1 << 40)]],
+            },
+        ];
+        let prog = compile(["prctl", "mmap", "recvmsg", "clone", "write"], &rules).unwrap();
+        let x = AUDIT_ARCH_X86_64;
+        let at = |nr: i64, args: [u64; 6]| run(&prog, x, nr, args);
+        assert_eq!(at(libc::SYS_prctl, [1, 0, 0, 0, 0, 0]), RET_ALLOW);
+        assert_eq!(at(libc::SYS_prctl, [2, 9, 9, 9, 9, 9]), RET_ALLOW);
+        assert_eq!(at(libc::SYS_prctl, [3, 0, 0, 0, 0, 0]), RET_KILL_PROCESS);
+        // Dword: the high half is not compared.
+        assert_eq!(
+            at(libc::SYS_prctl, [(7 << 32) | 1, 0, 0, 0, 0, 0]),
+            RET_ALLOW
+        );
+        assert_eq!(at(libc::SYS_mmap, [0, 4096, 3, 2, 0, 0]), RET_ALLOW);
+        assert_eq!(at(libc::SYS_mmap, [0, 4096, 7, 2, 0, 0]), RET_KILL_PROCESS);
+        assert_eq!(at(libc::SYS_mmap, [0, 4096, 3, 1, 0, 0]), RET_KILL_PROCESS);
+        assert_eq!(at(libc::SYS_recvmsg, [3, 0, 0x41, 0, 0, 0]), RET_ALLOW);
+        assert_eq!(
+            at(libc::SYS_recvmsg, [4, 0, 0x40, 0, 0, 0]),
+            RET_KILL_PROCESS
+        );
+        assert_eq!(
+            at(libc::SYS_recvmsg, [3, 0, 0x01, 0, 0, 0]),
+            RET_KILL_PROCESS
+        );
+        assert_eq!(at(libc::SYS_clone, [1 << 40, 0, 0, 0, 0, 0]), RET_ALLOW);
+        assert_eq!(at(libc::SYS_clone, [0, 0, 0, 0, 0, 0]), RET_KILL_PROCESS);
+        assert_eq!(at(libc::SYS_write, [9; 6]), RET_ALLOW);
+        assert_eq!(at(libc::SYS_read, [0; 6]), RET_KILL_PROCESS);
+        assert_eq!(
+            run(&prog, x, libc::SYS_write | 0x4000_0000, [0; 6]),
+            RET_KILL_PROCESS,
+            "x32 ABI"
+        );
+        assert_eq!(
+            run(&prog, AUDIT_ARCH_I386, 4 /* i386 write */, [0; 6]),
+            RET_KILL_PROCESS,
+            "foreign arch"
+        );
+    }
+
+    #[test]
+    fn refuses_bad_policies() {
+        let msg = |r: Result<BpfProgram, ConfineError>| r.unwrap_err().to_string();
+        assert_eq!(
+            msg(compile(["read", "nosuch"], &[])),
+            "seccomp: unknown syscall nosuch in the allowlist"
+        );
+        assert_eq!(
+            msg(compile(["read", "read"], &[])),
+            "seccomp: read listed twice"
+        );
+        assert_eq!(
+            msg(compile(["read"], &[ArgRule::one_of32("write", 0, &[1])])),
+            "seccomp: argument rule for write, which the allowlist does not list"
+        );
+        let twice = [
+            ArgRule::one_of32("read", 0, &[0]),
+            ArgRule::one_of32("read", 0, &[1]),
+        ];
+        assert_eq!(
+            msg(compile(["read"], &twice)),
+            "seccomp: read has more than one argument rule"
+        );
+    }
+}

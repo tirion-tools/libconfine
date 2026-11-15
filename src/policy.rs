@@ -143,3 +143,59 @@ pub fn enter(policy: &Policy<'_>) -> Result<Report, ConfineError> {
     policy.install(&prog)?;
     policy.self_check(abi, &prog)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report(rules: usize, mode: Option<i32>) -> String {
+        Report {
+            landlock_abi: 6,
+            landlock_rules: rules,
+            syscalls: 12,
+            bpf_insns: 99,
+            seccomp_mode: mode,
+        }
+        .to_string()
+    }
+
+    #[test]
+    fn report_lines() {
+        assert_eq!(
+            report(0, Some(2)),
+            "confined: landlock ABI 6 fully enforced (no rules), seccomp KILL_PROCESS filter 12 syscalls / 99 BPF insns, mode 2"
+        );
+        assert_eq!(
+            report(1, Some(2)),
+            "confined: landlock ABI 6 fully enforced, seccomp KILL_PROCESS filter 12 syscalls / 99 BPF insns, mode 2"
+        );
+        assert_eq!(
+            report(0, None),
+            "confined: landlock ABI 6 fully enforced (no rules), seccomp KILL_PROCESS filter 12 syscalls / 99 BPF insns"
+        );
+    }
+
+    #[test]
+    fn policy_filter_uses_its_rules() {
+        let p = Policy {
+            allowlist: vec!["read", "exit_group"],
+            arg_rules: vec![ArgRule::one_of32("read", 0, &[0])],
+            tsync: false,
+            rlimits: &[],
+            process: Process::default(),
+            box_checks: false,
+            landlock: Landlock::deny_all(6),
+            self_check: SelfCheck::default(),
+        };
+        let prog = p.filter().unwrap();
+        use super::super::bpf::{AUDIT_ARCH_X86_64, RET_ALLOW, RET_KILL_PROCESS, run};
+        assert_eq!(
+            run(&prog, AUDIT_ARCH_X86_64, libc::SYS_read, [0; 6]),
+            RET_ALLOW
+        );
+        assert_eq!(
+            run(&prog, AUDIT_ARCH_X86_64, libc::SYS_read, [1, 0, 0, 0, 0, 0]),
+            RET_KILL_PROCESS
+        );
+    }
+}

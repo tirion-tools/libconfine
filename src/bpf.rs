@@ -43,3 +43,56 @@ pub fn run(prog: &BpfProgram, arch: u32, nr: i64, args: [u64; 6]) -> u32 {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use seccompiler::sock_filter;
+
+    fn ins(code: u16, jt: u8, jf: u8, k: u32) -> sock_filter {
+        sock_filter { code, jt, jf, k }
+    }
+
+    #[test]
+    fn interprets_loads_jumps_and_returns() {
+        // if arch != x86_64 kill; if nr == 1 allow; if arg0 & 0xf0 allow; kill.
+        let prog = vec![
+            ins(0x20, 0, 0, 4),
+            ins(0x15, 1, 0, AUDIT_ARCH_X86_64),
+            ins(0x06, 0, 0, RET_KILL_PROCESS),
+            ins(0x20, 0, 0, 0),
+            ins(0x15, 0, 1, 1),
+            ins(0x06, 0, 0, RET_ALLOW),
+            ins(0x20, 0, 0, 16),
+            ins(0x45, 0, 1, 0xf0),
+            ins(0x05, 0, 0, 1),
+            ins(0x06, 0, 0, RET_KILL_PROCESS),
+            ins(0x06, 0, 0, RET_ALLOW),
+        ];
+        assert_eq!(run(&prog, AUDIT_ARCH_X86_64, 1, [0; 6]), RET_ALLOW);
+        assert_eq!(run(&prog, AUDIT_ARCH_I386, 1, [0; 6]), RET_KILL_PROCESS);
+        assert_eq!(
+            run(&prog, AUDIT_ARCH_X86_64, 2, [0x10, 0, 0, 0, 0, 0]),
+            RET_ALLOW
+        );
+        assert_eq!(
+            run(&prog, AUDIT_ARCH_X86_64, 2, [0x0f, 0, 0, 0, 0, 0]),
+            RET_KILL_PROCESS
+        );
+    }
+
+    #[test]
+    fn unsigned_comparisons() {
+        let prog = vec![
+            ins(0x20, 0, 0, 0),
+            ins(0x25, 2, 0, 10),
+            ins(0x35, 2, 0, 10),
+            ins(0x06, 0, 0, 1),
+            ins(0x06, 0, 0, 3),
+            ins(0x06, 0, 0, 2),
+        ];
+        assert_eq!(run(&prog, 0, 11, [0; 6]), 3);
+        assert_eq!(run(&prog, 0, 10, [0; 6]), 2);
+        assert_eq!(run(&prog, 0, 9, [0; 6]), 1);
+    }
+}

@@ -145,3 +145,62 @@ pub fn run_forked(setup: impl FnOnce() -> bool, body: impl FnOnce() -> String) -
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn counts() {
+        let mut m = Matrix::default();
+        m.record("a", "denied", &["EPERM"], "EPERM");
+        m.record("a", "control", &["ok"], "ok");
+        m.record("a", "leak", &["SIGSYS"], "ok");
+        assert_eq!(
+            m.clone().done(),
+            Matrix {
+                denials: 2,
+                controls: 1,
+                unexpected: 1
+            }
+        );
+        assert!(!m.ok());
+    }
+
+    #[test]
+    fn forked_outcomes() {
+        assert_eq!(run_forked(|| true, || "ok".into()), "ok");
+        assert_eq!(run_forked(|| false, || "ok".into()), "exit78");
+        assert_eq!(
+            run_forked(
+                || true,
+                // SAFETY: ends the forked child.
+                || unsafe { libc::_exit(3) }
+            ),
+            "exit3"
+        );
+        // No core file for the SIGSYS child.
+        let no_core = || {
+            let zero = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: valid rlimit.
+            unsafe { libc::setrlimit(libc::RLIMIT_CORE, &zero) == 0 }
+        };
+        assert_eq!(
+            run_forked(
+                no_core,
+                // SAFETY: kills the forked child.
+                || unsafe {
+                    libc::raise(libc::SIGSYS);
+                    libc::_exit(0)
+                }
+            ),
+            "SIGSYS"
+        );
+        // SAFETY: close(-1) only fails.
+        let rc = run_forked(|| true, || outcome(unsafe { libc::close(-1) }.into()));
+        assert_eq!(rc, "EBADF");
+    }
+}

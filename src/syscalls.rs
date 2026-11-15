@@ -373,3 +373,18 @@ pub const TABLE: &[(&str, i64)] = &[
 pub fn number(name: &str) -> Option<i64> {
     TABLE.iter().find(|(n, _)| *n == name).map(|&(_, nr)| nr)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_and_numbers_are_unique() {
+        let names: std::collections::BTreeSet<_> = TABLE.iter().map(|t| t.0).collect();
+        let nrs: std::collections::BTreeSet<_> = TABLE.iter().map(|t| t.1).collect();
+        assert_eq!((names.len(), nrs.len()), (TABLE.len(), TABLE.len()));
+        assert_eq!(number("read"), Some(libc::SYS_read));
+        assert_eq!(number("capget"), Some(libc::SYS_capget));
+        assert_eq!(number("no_such_syscall"), None);
+    }
+}
