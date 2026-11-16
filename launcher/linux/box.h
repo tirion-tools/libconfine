@@ -12,6 +12,7 @@
 namespace confine::lnx {
 
 inline constexpr unsigned long kBindKeepDev = 1UL << 40;  // device-node binds must not get MS_NODEV
+inline constexpr int kBindMissing = -2;                    // Binder::bind: optional source absent
 
 struct Binder {
   std::string base;
@@ -19,8 +20,8 @@ struct Binder {
 
   // Binds `host` at `dst` below `base` (MS_NOSUID, MS_NODEV unless kBindKeepDev, read-only unless
   // `writable`, plus the `extra` MS_* flags). > 0 errno, 0 bound, -1 already visible through an
-  // earlier directory bind.
-  int bind(const std::string& host, const std::string& dst, bool writable, unsigned long extra);
+  // earlier directory bind, kBindMissing `host` does not exist and `missing_ok` (nothing created).
+  int bind(const std::string& host, const std::string& dst, bool writable, unsigned long extra, bool missing_ok = false);
 };
 
 int mkdir_p(const std::string& path);

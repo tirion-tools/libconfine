@@ -1,4 +1,4 @@
-# The full gate (fmt, clippy, test, launcher, audit) in the pinned toolchain container, the same
+# The full gate (fmt, clippy, test, launcher, launcher-san, audit) in the pinned toolchain container, the same
 # script as the local gate. Runs on release tags and manual dispatch.
 name: ci
 

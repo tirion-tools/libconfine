@@ -18,15 +18,27 @@
 
 namespace confine::lnx {
 
+struct Binder;  // linux/box.h
+
 // One line of a library manifest: "<kind> <host path> [<path in the box>]", kind 'r' a file, 'd' a
-// directory tree, 'x' a file with execute (the dynamic loader); '#' comments and blank lines ignored.
+// directory tree, 'x' a file with execute (the dynamic loader), 'o' an optional file (read-only like 'r',
+// skipped when the host path does not exist, e.g. /etc/localtime); '#' comments and blank lines ignored.
 struct ManifestEntry {
   char kind;
   std::string host, dst;
+  bool bound = false;  // set by bind_manifest; an unbound 'o' entry gets no Landlock rule
 };
 
 // Reads (and closes) the manifest at `fd`; refuses a malformed, relative, '..'-carrying or empty one.
 std::vector<ManifestEntry> load_manifest(int fd);
+
+// Binds every entry of `manifest` read-only below `b.base` (in the box's mount namespace) and marks it bound.
+// A missing 'o' source is skipped; any other failure returns that entry's index with its errno in *err.
+// Returns -1 when every entry is bound or skipped.
+int bind_manifest(Binder& b, std::vector<ManifestEntry>& manifest, int* err);
+
+// The Landlock rules (path in the box, rights) the manifest's bound entries get.
+std::vector<std::pair<std::string, uint64_t>> manifest_landlock(const std::vector<ManifestEntry>& manifest);
 
 // Adds libseccomp rules, remembering any failure (EACCES, a rule identical to the default, is not one).
 class SeccompRules {

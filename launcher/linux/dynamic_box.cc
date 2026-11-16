@@ -62,8 +62,7 @@ int apply_landlock(const DynamicBox& box, const std::string& ld_path, const std:
   const int rs = static_cast<int>(syscall(SYS_landlock_create_ruleset, &attr, sizeof attr, 0));
   if (rs < 0) return errno;
   int err = 0;
-  for (const ManifestEntry& e : box.manifest)
-    err |= ll_path(rs, e.dst.c_str(), e.kind == 'd' ? kLlReadDir : e.kind == 'x' ? (kLlRead | LANDLOCK_ACCESS_FS_EXECUTE) : kLlRead);
+  for (const auto& [path, access] : manifest_landlock(box.manifest)) err |= ll_path(rs, path.c_str(), access);
   if (!ld_path.empty()) err |= ll_path(rs, ld_path.c_str(), kLlRead | LANDLOCK_ACCESS_FS_EXECUTE);
   err |= ll_path(rs, "/proc", kLlReadDir);
   err |= ll_path(rs, "/dev/null", kLlRead | LANDLOCK_ACCESS_FS_WRITE_FILE);
@@ -104,15 +103,14 @@ void child_dynamic(void* ctx) {
   }
   Binder b{.base = "/tmp", .bound_dirs = {}};
   step("tmpfs_newroot", err(mount("tmpfs", b.base.c_str(), "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755,size=4m")));
-  std::string ld;
-  for (const ManifestEntry& e : box.manifest) {
-    const int r = b.bind(e.host, e.dst, false, 0);
-    if (r > 0) {
-      dprintf(kStatusFd, "F bind_manifest_entry:%s %s\n", e.host.c_str(), errno_name(r));
-      _exit(kExitRefused);
-    }
-    if (e.kind == 'x') ld = e.dst;
+  int bind_err = 0;
+  if (const int i = bind_manifest(b, box.manifest, &bind_err); i >= 0) {
+    dprintf(kStatusFd, "F bind_manifest_entry:%s %s\n", box.manifest[i].host.c_str(), errno_name(bind_err));
+    _exit(kExitRefused);
   }
+  std::string ld;
+  for (const ManifestEntry& e : box.manifest)
+    if (e.kind == 'x') ld = e.dst;
   for (size_t i = 0; i < box.files.size(); ++i) {
     const int r = b.bind(file_paths[i], box.files[i].dst, false, 0);
     step(("bind_ro_" + box.files[i].dst).c_str(), r > 0 ? r : 0);
@@ -155,6 +153,29 @@ void child_dynamic(void* ctx) {
 
 }  // namespace
 
+int bind_manifest(Binder& b, std::vector<ManifestEntry>& manifest, int* err) {
+  for (size_t i = 0; i < manifest.size(); ++i) {
+    ManifestEntry& e = manifest[i];
+    const int r = b.bind(e.host, e.dst, false, 0, e.kind == 'o');
+    if (r == kBindMissing) continue;
+    if (r > 0) {
+      *err = r;
+      return static_cast<int>(i);
+    }
+    e.bound = true;
+  }
+  return -1;
+}
+
+std::vector<std::pair<std::string, uint64_t>> manifest_landlock(const std::vector<ManifestEntry>& manifest) {
+  std::vector<std::pair<std::string, uint64_t>> out;
+  for (const ManifestEntry& e : manifest) {
+    if (e.kind == 'o' && !e.bound) continue;
+    out.emplace_back(e.dst, e.kind == 'd' ? kLlReadDir : e.kind == 'x' ? (kLlRead | LANDLOCK_ACCESS_FS_EXECUTE) : kLlRead);
+  }
+  return out;
+}
+
 std::vector<ManifestEntry> load_manifest(int fd) {
   FILE* f = fdopen(fd, "r");
   if (f == nullptr) refuse("manifest: %s", errno_name(errno));
@@ -163,7 +184,7 @@ std::vector<ManifestEntry> load_manifest(int fd) {
   while (std::fgets(line, sizeof line, f) != nullptr) {
     if (char* nl = std::strchr(line, '\n'); nl != nullptr) *nl = 0;
     if (line[0] == 0 || line[0] == '#') continue;
-    if (std::strlen(line) < 3 || line[1] != ' ' || std::strchr("rdx", line[0]) == nullptr) refuse("manifest line malformed: %s", line);
+    if (std::strlen(line) < 3 || line[1] != ' ' || std::strchr("rdxo", line[0]) == nullptr) refuse("manifest line malformed: %s", line);
     char* host = line + 2;
     char* dst = std::strchr(host, ' ');
     if (dst != nullptr) *dst++ = 0;

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs a command in the pinned gate container (tools/container/Dockerfile) with the repository at
 # /src, as the calling user; caches go to .cache/ (ignored). The image tag is the hash of the
-# Dockerfile, built on first use.
+# Dockerfile, built on first use. seccomp and AppArmor unconfined: the launcher tests create user namespaces.
 #
 #   tools/container.sh tools/gate.sh        every gate
 #   tools/container.sh                      a shell
@@ -16,6 +16,6 @@ mkdir -p "$ROOT/.cache/cargo"
 TTY=()
 [[ -t 0 && -t 1 ]] && TTY=(-it)
 JOBS=${GATE_JOBS:-4}
-exec docker run --rm "${TTY[@]}" --cpus "$JOBS" --user "$(id -u):$(id -g)" \
+exec docker run --rm "${TTY[@]}" --cpus "$JOBS" --security-opt seccomp=unconfined --security-opt apparmor=unconfined --user "$(id -u):$(id -g)" \
   -e CARGO_HOME=/src/.cache/cargo -e CARGO_BUILD_JOBS="$JOBS" -e HOME=/tmp -e CI \
   -v "$ROOT:/src" -w /src "$IMAGE" "${@:-bash}"

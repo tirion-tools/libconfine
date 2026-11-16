@@ -135,9 +135,9 @@ int mkdir_p(const std::string& path) {
   return 0;
 }
 
-int Binder::bind(const std::string& host, const std::string& dst, bool writable, unsigned long extra) {
+int Binder::bind(const std::string& host, const std::string& dst, bool writable, unsigned long extra, bool missing_ok) {
   const int src = open(host.c_str(), O_PATH | O_CLOEXEC);
-  if (src < 0) return errno;
+  if (src < 0) return missing_ok && errno == ENOENT ? kBindMissing : errno;
   struct stat s{};
   fstat(src, &s);
   std::string resolved;

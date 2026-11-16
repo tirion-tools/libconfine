@@ -2,7 +2,7 @@
 # invocation contract, the descriptor-only box, the one-directory box and the dynamic-binary box. The caller
 # supplies the policy table, the helper directory, each helper's argv and the dynamic box's specifics.
 # Links libseccomp (dynamic, LGPL-2.1). Consumers add_subdirectory() this directory; built on its own it
-# also builds and registers the contract tests with strict warnings as errors (tools/gate.sh launcher).
+# also builds and registers the contract and manifest tests with strict warnings as errors (tools/gate.sh launcher).
 cmake_minimum_required(VERSION 3.25)
 project(confine_launcher LANGUAGES CXX)
 
@@ -27,4 +27,8 @@ if(PROJECT_IS_TOP_LEVEL)
   target_link_libraries(contract_test PRIVATE confine_launcher)
   target_compile_options(contract_test PRIVATE ${_strict})
   add_test(NAME launcher.contract COMMAND contract_test)
+  add_executable(manifest_test tests/manifest_test.cc)
+  target_link_libraries(manifest_test PRIVATE confine_launcher)
+  target_compile_options(manifest_test PRIVATE ${_strict})
+  add_test(NAME launcher.manifest COMMAND manifest_test)
 endif()
