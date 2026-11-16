@@ -29,7 +29,8 @@ What it adds:
 1. A **fail-closed self-confinement sequence** ([`confine::enter`]) for single-threaded, statically linked helpers:
    lower-only rlimits, non-dumpable and `NO_NEW_PRIVS` (both verified), then Landlock with every right and scope of
    the running kernel's ABI handled and a hard minimum ABI, then one KILL_PROCESS seccomp filter compiled from a
-   frozen allowlist and its argument rules, then a self-check. It also handles the musl and Rust runtime quirks that
+   frozen allowlist and its argument rules (plus, optionally, a few syscalls answered with a fixed errno in the same
+   filter), then a self-check. It also handles the musl and Rust runtime quirks that
    would otherwise widen the filter: pthread key 0 reserved, `SIGXFSZ` ignored, an allocator that exits on
    allocation failure ([`confine::alloc::ExitOnOom`]).
 2. **In-helper box checks** ([`confine::checks`]): the helper verifies the launcher's box itself (PID 1 with no
@@ -60,7 +61,7 @@ Rust (`confine`):
 |---|---|
 | `Policy`, `enter(&Policy) -> Result<Report, ConfineError>` | the whole sequence; `Report` prints one `confined: ...` line |
 | `allowlist::parse` | the allowlist file format: one syscall name per line, `#` comments |
-| `filter`, `ArgRule` | the seccompiler filter (default and wrong architecture KILL_PROCESS) and argument rules |
+| `filter`, `ArgRule`, `Failing` | the seccompiler filter (default and wrong architecture KILL_PROCESS), argument rules, and syscalls that fail with a fixed errno instead (a prologue in the same filter) |
 | `landlock::Landlock` | deny-all or path rules at a minimum ABI |
 | `process::{Process, Rlimit}` | the process layers |
 | `checks` | descriptor-only box checks and the capability check |

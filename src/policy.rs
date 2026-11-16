@@ -4,7 +4,7 @@ use std::fmt;
 
 use seccompiler::BpfProgram;
 
-use super::filter::{self, ArgRule};
+use super::filter::{self, ArgRule, Failing};
 use super::landlock::Landlock;
 use super::process::{self, Process, Rlimit};
 use super::{ConfineError, checks};
@@ -27,6 +27,8 @@ pub struct Policy<'a> {
     pub allowlist: Vec<&'a str>,
     /// Argument rules of allowlisted syscalls; a syscall without one is allowed with any arguments.
     pub arg_rules: Vec<ArgRule<'a>>,
+    /// Syscalls that fail with an errno instead of killing (none allowlisted).
+    pub failing: Vec<Failing<'a>>,
     /// Install the filter on every thread (TSYNC).
     pub tsync: bool,
     /// Lowered (never raised) during the process layers.
@@ -47,6 +49,8 @@ pub struct Report {
     pub landlock_rules: usize,
     /// Syscalls in the allowlist.
     pub syscalls: usize,
+    /// Syscalls failing with an errno.
+    pub failing: usize,
     /// Instructions in the installed BPF program.
     pub bpf_insns: usize,
     /// PR_GET_SECCOMP after installation, when the self-check reads it.
@@ -67,6 +71,9 @@ impl fmt::Display for Report {
             self.syscalls,
             self.bpf_insns
         )?;
+        if self.failing > 0 {
+            write!(f, ", {} failing with errno", self.failing)?;
+        }
         if let Some(mode) = self.seccomp_mode {
             write!(f, ", mode {mode}")?;
         }
@@ -77,7 +84,11 @@ impl fmt::Display for Report {
 impl Policy<'_> {
     /// Compiles the allowlist and argument rules.
     pub fn filter(&self) -> Result<BpfProgram, ConfineError> {
-        filter::compile(self.allowlist.iter().copied(), &self.arg_rules)
+        filter::compile(
+            self.allowlist.iter().copied(),
+            &self.arg_rules,
+            &self.failing,
+        )
     }
 
     /// The process layers with `rlimits` (all of [`Policy::rlimits`] or a subset).
@@ -124,6 +135,7 @@ impl Policy<'_> {
             landlock_abi,
             landlock_rules: self.landlock.paths.len(),
             syscalls: self.allowlist.len(),
+            failing: self.failing.len(),
             bpf_insns: prog.len(),
             seccomp_mode,
         })
@@ -153,10 +165,27 @@ mod tests {
             landlock_abi: 6,
             landlock_rules: rules,
             syscalls: 12,
+            failing: 0,
             bpf_insns: 99,
             seccomp_mode: mode,
         }
         .to_string()
+    }
+
+    #[test]
+    fn report_counts_failing_syscalls() {
+        let r = Report {
+            landlock_abi: 6,
+            landlock_rules: 0,
+            syscalls: 8,
+            failing: 3,
+            bpf_insns: 40,
+            seccomp_mode: Some(2),
+        };
+        assert_eq!(
+            r.to_string(),
+            "confined: landlock ABI 6 fully enforced (no rules), seccomp KILL_PROCESS filter 8 syscalls / 40 BPF insns, 3 failing with errno, mode 2"
+        );
     }
 
     #[test]
@@ -180,6 +209,7 @@ mod tests {
         let p = Policy {
             allowlist: vec!["read", "exit_group"],
             arg_rules: vec![ArgRule::one_of32("read", 0, &[0])],
+            failing: vec![],
             tsync: false,
             rlimits: &[],
             process: Process::default(),

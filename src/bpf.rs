@@ -8,6 +8,8 @@ pub const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
 pub const AUDIT_ARCH_I386: u32 = 0x4000_0003;
 pub const RET_ALLOW: u32 = 0x7fff_0000;
 pub const RET_KILL_PROCESS: u32 = 0x8000_0000;
+/// `SECCOMP_RET_ERRNO`; the low 16 bits carry the errno.
+pub const RET_ERRNO: u32 = 0x0005_0000;
 
 /// The filter's return value for syscall `nr` with `args` from architecture `arch`.
 pub fn run(prog: &BpfProgram, arch: u32, nr: i64, args: [u64; 6]) -> u32 {

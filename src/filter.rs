@@ -1,6 +1,8 @@
 //! The seccomp layer: an allowlist of syscall names plus argument rules, compiled by seccompiler into
 //! one BPF program (default action and wrong architecture: KILL_PROCESS) and installed with
-//! `seccompiler::apply_filter` (TSYNC on request).
+//! `seccompiler::apply_filter` (TSYNC on request). Optionally a few syscalls fail with a fixed errno
+//! instead of killing ([`Failing`]): a prologue in the same program answers them before the
+//! allowlist, so the process still has exactly one filter.
 
 use std::collections::BTreeMap;
 
@@ -9,6 +11,7 @@ use seccompiler::{
     SeccompRule, TargetArch,
 };
 
+use super::bpf::{AUDIT_ARCH_X86_64, RET_ERRNO, RET_KILL_PROCESS};
 use super::{ConfineError, errno, errno_name, syscalls};
 
 /// How many bytes of the argument a [`Cond`] compares.
@@ -88,6 +91,15 @@ impl<'a> ArgRule<'a> {
     }
 }
 
+/// A syscall that fails with `errno` instead of killing the process: for a call a library makes and
+/// copes with failing (for example a probe of `/proc` or of the CPU count). Never also allowlisted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Failing<'a> {
+    pub syscall: &'a str,
+    /// 1..=4095 (`SECCOMP_RET_ERRNO` data).
+    pub errno: i32,
+}
+
 fn condition(c: &Cond) -> Result<SeccompCondition, ConfineError> {
     let len = match c.width {
         Width::Dword => SeccompCmpArgLen::Dword,
@@ -98,10 +110,13 @@ fn condition(c: &Cond) -> Result<SeccompCondition, ConfineError> {
 }
 
 /// Compiles `allowlist` (syscall names; each at most once) with `rules` (each naming a listed
-/// syscall at most once) for x86_64.
+/// syscall at most once) for x86_64. With `failing` (each syscall once, none allowlisted) the
+/// program starts with a prologue: wrong architecture KILL_PROCESS, then `SECCOMP_RET_ERRNO` for
+/// each failing syscall; without, the program is seccompiler's alone.
 pub fn compile<'a>(
     allowlist: impl IntoIterator<Item = &'a str>,
     rules: &[ArgRule<'_>],
+    failing: &[Failing<'_>],
 ) -> Result<BpfProgram, ConfineError> {
     let e = |x: &dyn std::fmt::Display| ConfineError::Seccomp(x.to_string());
     let mut map: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
@@ -138,7 +153,47 @@ pub fn compile<'a>(
             r.syscall
         )));
     }
-    SeccompFilter::new(
+    let mut prologue = Vec::new();
+    if !failing.is_empty() {
+        // ld arch; jeq x86_64 ? skip : kill; ld nr
+        prologue.extend([
+            ins(0x20, 0, 0, 4),
+            ins(0x15, 1, 0, AUDIT_ARCH_X86_64),
+            ins(0x06, 0, 0, RET_KILL_PROCESS),
+            ins(0x20, 0, 0, 0),
+        ]);
+    }
+    let mut seen = Vec::new();
+    for f in failing {
+        let nr = syscalls::number(f.syscall).ok_or_else(|| {
+            ConfineError::Seccomp(format!("unknown failing syscall {}", f.syscall))
+        })?;
+        if names.contains(&f.syscall) {
+            return Err(ConfineError::Seccomp(format!(
+                "{} is both allowed and failing",
+                f.syscall
+            )));
+        }
+        if seen.contains(&nr) {
+            return Err(ConfineError::Seccomp(format!(
+                "{} failing twice",
+                f.syscall
+            )));
+        }
+        if !(1..=4095).contains(&f.errno) {
+            return Err(ConfineError::Seccomp(format!(
+                "{}: errno {} out of range",
+                f.syscall, f.errno
+            )));
+        }
+        seen.push(nr);
+        // jeq nr ? ret errno : next pair
+        prologue.extend([
+            ins(0x15, 0, 1, nr as u32),
+            ins(0x06, 0, 0, RET_ERRNO | f.errno as u32),
+        ]);
+    }
+    let prog: BpfProgram = SeccompFilter::new(
         map,
         SeccompAction::KillProcess,
         SeccompAction::Allow,
@@ -146,7 +201,14 @@ pub fn compile<'a>(
     )
     .map_err(|x| e(&x))?
     .try_into()
-    .map_err(|x: seccompiler::BackendError| e(&x))
+    .map_err(|x: seccompiler::BackendError| e(&x))?;
+    // seccompiler's jumps are relative, so its program runs unchanged after the prologue.
+    prologue.extend(prog);
+    Ok(prologue)
+}
+
+fn ins(code: u16, jt: u8, jf: u8, k: u32) -> seccompiler::sock_filter {
+    seccompiler::sock_filter { code, jt, jf, k }
 }
 
 /// Installs `prog` on the calling thread (`all_threads`: on every thread, TSYNC). Requires
@@ -192,7 +254,7 @@ pub fn install(prog: &BpfProgram, all_threads: bool) -> Result<(), ConfineError>
 
 #[cfg(test)]
 mod tests {
-    use super::super::bpf::{AUDIT_ARCH_I386, AUDIT_ARCH_X86_64, RET_ALLOW, RET_KILL_PROCESS, run};
+    use super::super::bpf::{AUDIT_ARCH_I386, RET_ALLOW, run};
     use super::*;
     use std::collections::BTreeSet;
 
@@ -205,7 +267,7 @@ mod tests {
     #[test]
     fn compiles_exactly_the_allowlist() {
         let list = ["read", "write", "exit_group", "getrandom", "capget"];
-        let prog = compile(list, &[]).unwrap();
+        let prog = compile(list, &[], &[]).unwrap();
         let want: BTreeSet<i64> = list.iter().map(|n| syscalls::number(n).unwrap()).collect();
         assert_eq!(allowed(&prog, [0; 6]), want);
         assert_eq!(allowed(&prog, [u64::MAX; 6]), want);
@@ -228,7 +290,7 @@ mod tests {
                 any_of: vec![vec![Cond::eq64(0, 1 << 40)]],
             },
         ];
-        let prog = compile(["prctl", "mmap", "recvmsg", "clone", "write"], &rules).unwrap();
+        let prog = compile(["prctl", "mmap", "recvmsg", "clone", "write"], &rules, &[]).unwrap();
         let x = AUDIT_ARCH_X86_64;
         let at = |nr: i64, args: [u64; 6]| run(&prog, x, nr, args);
         assert_eq!(at(libc::SYS_prctl, [1, 0, 0, 0, 0, 0]), RET_ALLOW);
@@ -271,15 +333,19 @@ mod tests {
     fn refuses_bad_policies() {
         let msg = |r: Result<BpfProgram, ConfineError>| r.unwrap_err().to_string();
         assert_eq!(
-            msg(compile(["read", "nosuch"], &[])),
+            msg(compile(["read", "nosuch"], &[], &[])),
             "seccomp: unknown syscall nosuch in the allowlist"
         );
         assert_eq!(
-            msg(compile(["read", "read"], &[])),
+            msg(compile(["read", "read"], &[], &[])),
             "seccomp: read listed twice"
         );
         assert_eq!(
-            msg(compile(["read"], &[ArgRule::one_of32("write", 0, &[1])])),
+            msg(compile(
+                ["read"],
+                &[ArgRule::one_of32("write", 0, &[1])],
+                &[]
+            )),
             "seccomp: argument rule for write, which the allowlist does not list"
         );
         let twice = [
@@ -287,8 +353,66 @@ mod tests {
             ArgRule::one_of32("read", 0, &[1]),
         ];
         assert_eq!(
-            msg(compile(["read"], &twice)),
+            msg(compile(["read"], &twice, &[])),
             "seccomp: read has more than one argument rule"
+        );
+    }
+
+    #[test]
+    fn failing_syscalls_return_their_errno() {
+        let fail = |syscall, errno| Failing { syscall, errno };
+        let failing = [
+            fail("open", libc::EPERM),
+            fail("sched_getaffinity", libc::EPERM),
+        ];
+        let prog = compile(["read", "exit_group"], &[], &failing).unwrap();
+        let x = AUDIT_ARCH_X86_64;
+        let eperm = RET_ERRNO | libc::EPERM as u32;
+        assert_eq!(run(&prog, x, libc::SYS_open, [0; 6]), eperm);
+        assert_eq!(run(&prog, x, libc::SYS_sched_getaffinity, [9; 6]), eperm);
+        assert_eq!(run(&prog, x, libc::SYS_read, [0; 6]), RET_ALLOW);
+        assert_eq!(run(&prog, x, libc::SYS_openat, [0; 6]), RET_KILL_PROCESS);
+        assert_eq!(
+            run(&prog, x, libc::SYS_open | 0x4000_0000, [0; 6]),
+            RET_KILL_PROCESS,
+            "x32 ABI"
+        );
+        assert_eq!(
+            run(&prog, AUDIT_ARCH_I386, libc::SYS_open, [0; 6]),
+            RET_KILL_PROCESS,
+            "foreign arch"
+        );
+        let want: BTreeSet<i64> = [libc::SYS_read, libc::SYS_exit_group].into();
+        assert_eq!(allowed(&prog, [0; 6]), want);
+        // Without failing syscalls the program is seccompiler's alone.
+        let plain = compile(["read", "exit_group"], &[], &[]).unwrap();
+        assert_eq!(prog.len(), plain.len() + 4 + 2 * failing.len());
+        assert_eq!(prog[prog.len() - plain.len()..], plain[..]);
+    }
+
+    #[test]
+    fn refuses_bad_failing_entries() {
+        let msg = |f: &[Failing<'_>]| compile(["read"], &[], f).unwrap_err().to_string();
+        let fail = |syscall, errno| Failing { syscall, errno };
+        assert_eq!(
+            msg(&[fail("read", 1)]),
+            "seccomp: read is both allowed and failing"
+        );
+        assert_eq!(
+            msg(&[fail("open", 1), fail("open", 13)]),
+            "seccomp: open failing twice"
+        );
+        assert_eq!(
+            msg(&[fail("nosuch", 1)]),
+            "seccomp: unknown failing syscall nosuch"
+        );
+        assert_eq!(
+            msg(&[fail("open", 0)]),
+            "seccomp: open: errno 0 out of range"
+        );
+        assert_eq!(
+            msg(&[fail("open", 4096)]),
+            "seccomp: open: errno 4096 out of range"
         );
     }
 }
