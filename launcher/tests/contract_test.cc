@@ -158,6 +158,20 @@ void memfds_sealed_response() {
   place(memfd(16, true), 0);
   place(memfd(0, true), 1);
 }
+// A regular (non-memfd) file where a sealed memfd belongs: F_GET_SEALS fails on it (-1, every bit set).
+int regular_file(size_t bytes) {
+  const int fd = open("/tmp", O_TMPFILE | O_RDWR | O_CLOEXEC, 0600);
+  if (fd < 0) die("O_TMPFILE");
+  const std::string data(bytes, 'x');
+  if (write(fd, data.data(), data.size()) != static_cast<ssize_t>(data.size()) || lseek(fd, 0, SEEK_SET) != 0)
+    die("tmpfile write");
+  return fd;
+}
+void memfds_regular_file_request() {
+  place(regular_file(16), 0);
+  place(memfd(0, false), 1);
+}
+void fd5_regular_file() { place(regular_file(64), 5); }
 void fd5_sealed_memfd() { place(memfd(64, true), 5); }
 void fd5_big_memfd() { place(memfd(4096, true), 5); }
 void fd5_open_directory() {
@@ -191,12 +205,14 @@ int main() {
   expect_refused("oversized request", memfds, memfds_oversized_request,
                  "fd 0 (request) is not a non-empty regular file of at most 1024 bytes");
   expect_refused("sealed response", memfds, memfds_sealed_response, "fd 1 (response) is not an empty, growable memfd");
+  expect_refused("request not a memfd", memfds, memfds_regular_file_request, "fd 0 (request) is not a sealed memfd");
 
   HelperPolicy sealed = channel_policy();
   sealed.extra_fd = ExtraFd{ExtraFd::Kind::kSealedMemfd, "input", 1024};
   expect_accepted("fd 5 sealed memfd", sealed, fd5_sealed_memfd);
   expect_refused("fd 5 missing", sealed, nullptr, "fd 5 (input) is not a non-empty regular file");
   expect_refused("fd 5 too large", sealed, fd5_big_memfd, "fd 5 (input) is not a non-empty regular file of at most 1024 bytes");
+  expect_refused("fd 5 not a memfd", sealed, fd5_regular_file, "fd 5 (input) is not a sealed memfd");
 
   HelperPolicy directory = channel_policy();
   directory.extra_fd = ExtraFd{ExtraFd::Kind::kDirectory, "data", 0};

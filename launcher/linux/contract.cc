@@ -96,7 +96,9 @@ void check_fds(const HelperPolicy& policy) {
     constexpr int kSeals = F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL;
     if (fstat(0, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || static_cast<uint64_t>(st.st_size) > policy.request_max)
       refuse("fd 0 (request) is not a non-empty regular file of at most %llu bytes", static_cast<unsigned long long>(policy.request_max));
-    if ((fcntl(0, F_GET_SEALS) & kSeals) != kSeals) refuse("fd 0 (request) is not a sealed memfd");
+    // F_GET_SEALS fails (-1, every bit set) on a file that is not a memfd: refuse that too.
+    const int request_seals = fcntl(0, F_GET_SEALS);
+    if (request_seals < 0 || (request_seals & kSeals) != kSeals) refuse("fd 0 (request) is not a sealed memfd");
     if (lseek(0, 0, SEEK_CUR) != 0) refuse("fd 0 (request) is not at offset 0");
     // fd 1: the response, an empty writable memfd the helper may grow.
     const int seals = fcntl(1, F_GET_SEALS);
@@ -121,7 +123,8 @@ void check_fds(const HelperPolicy& policy) {
       constexpr int kSeals = F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL;
       if (fstat(kExtraFd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 || static_cast<uint64_t>(st.st_size) > x.max_bytes)
         refuse("fd 5 (%s) is not a non-empty regular file of at most %s", name.c_str(), size_text(x.max_bytes).c_str());
-      if ((fcntl(kExtraFd, F_GET_SEALS) & kSeals) != kSeals) refuse("fd 5 (%s) is not a sealed memfd", name.c_str());
+      const int extra_seals = fcntl(kExtraFd, F_GET_SEALS);
+      if (extra_seals < 0 || (extra_seals & kSeals) != kSeals) refuse("fd 5 (%s) is not a sealed memfd", name.c_str());
       last = kExtraFd;
       break;
     }
