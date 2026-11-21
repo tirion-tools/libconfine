@@ -47,6 +47,7 @@ struct ResourceLimits {
   uint64_t address_space;  // bytes
   uint64_t file_size;      // bytes, largest file it may write
   uint32_t pending_signals;
+  uint32_t cpu_seconds;  // RLIMIT_CPU, soft = hard: the kernel kills the helper once it has used this much CPU time
 };
 
 struct HelperPolicy {

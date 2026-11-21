@@ -302,6 +302,7 @@ void apply_rlimits(const HelperPolicy& policy) {
       {RLIMIT_AS, l.address_space != 0, l.address_space, "rlimit_as"},
       {RLIMIT_FSIZE, l.file_size != 0, l.file_size, "rlimit_fsize"},
       {RLIMIT_SIGPENDING, l.pending_signals != 0, l.pending_signals, "rlimit_sigpending"},
+      {RLIMIT_CPU, l.cpu_seconds != 0, l.cpu_seconds, "rlimit_cpu"},
   };
   for (const Rl& r : limits) {
     if (!r.limited) continue;
