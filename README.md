@@ -115,6 +115,12 @@ tools/container.sh tools/gate.sh test       # one job
 The crate parses no untrusted input, so there is no fuzz target. The library ships no binaries. Consumers pin a
 commit. `.github/workflows/` mirrors the gate for when the repository is hosted.
 
+## Contributing
+
+This repository is not accepting contributions at this time: issues and pull requests are not accepted. Report
+security vulnerabilities privately as described in [`SECURITY.md`](SECURITY.md).
+
 ## Licence
 
-MIT, see `LICENSE`. The launcher links libseccomp (LGPL-2.1) dynamically.
+MIT, see `LICENSE`. The launcher links libseccomp (LGPL-2.1) dynamically. Third-party material:
+`THIRD-PARTY-NOTICES.md`.
